@@ -21,6 +21,7 @@ import io.vertx.core.http.HttpVersion;
 import io.vertx.core.http.RequestOptions;
 import io.vertx.core.net.SocketAddress;
 import io.vertx.grpc.client.GrpcClient;
+import io.vertx.grpc.client.GrpcClientOptions;
 import io.vertx.grpc.client.GrpcClientRequest;
 import io.vertx.grpc.common.GrpcMessageDecoder;
 import io.vertx.grpc.common.GrpcMessageEncoder;
@@ -32,15 +33,20 @@ public class GrpcClientImpl implements GrpcClient {
 
   private final Vertx vertx;
   private HttpClient client;
+  private final long maxMessageSize;
 
-  public GrpcClientImpl(HttpClientOptions options, Vertx vertx) {
+  public GrpcClientImpl(Vertx vertx, GrpcClientOptions options) {
+    HttpClientOptions transportOptions = options.getTransportOptions();
+    if (transportOptions == null) {
+      transportOptions = new HttpClientOptions().setHttp2ClearTextUpgrade(false);
+    } else {
+      transportOptions = new HttpClientOptions(transportOptions);
+    }
+    transportOptions.setProtocolVersion(HttpVersion.HTTP_2);
+
     this.vertx = vertx;
-    this.client = vertx.createHttpClient(new HttpClientOptions(options)
-      .setProtocolVersion(HttpVersion.HTTP_2));
-  }
-
-  public GrpcClientImpl(Vertx vertx) {
-    this(new HttpClientOptions().setHttp2ClearTextUpgrade(false), vertx);
+    this.client = vertx.createHttpClient(transportOptions);
+    this.maxMessageSize = options.getMaxMessageSize();
   }
 
   @Override public Future<GrpcClientRequest<Buffer, Buffer>> request(SocketAddress server) {
@@ -48,7 +54,7 @@ public class GrpcClientImpl implements GrpcClient {
       .setMethod(HttpMethod.POST)
       .setServer(server);
     return client.request(options)
-      .map(request -> new GrpcClientRequestImpl<>(request, GrpcMessageEncoder.IDENTITY, GrpcMessageDecoder.IDENTITY));
+      .map(request -> new GrpcClientRequestImpl<>(request, maxMessageSize, GrpcMessageEncoder.IDENTITY, GrpcMessageDecoder.IDENTITY));
   }
 
   @Override public <Req, Resp> Future<GrpcClientRequest<Req, Resp>> request(SocketAddress server, MethodDescriptor<Req, Resp> service) {
@@ -59,7 +65,7 @@ public class GrpcClientImpl implements GrpcClient {
     GrpcMessageEncoder<Req> messageEncoder = GrpcMessageEncoder.marshaller(service.getRequestMarshaller());
     return client.request(options)
       .map(request -> {
-        GrpcClientRequestImpl<Req, Resp> call = new GrpcClientRequestImpl<>(request, messageEncoder, messageDecoder);
+        GrpcClientRequestImpl<Req, Resp> call = new GrpcClientRequestImpl<>(request, maxMessageSize, messageEncoder, messageDecoder);
         call.fullMethodName(service.getFullMethodName());
         return call;
       });

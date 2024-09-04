@@ -17,8 +17,12 @@ import io.vertx.core.buffer.Buffer;
 import io.vertx.core.http.HttpServerRequest;
 import io.vertx.grpc.common.GrpcMessageDecoder;
 import io.vertx.grpc.common.GrpcMessageEncoder;
+import io.vertx.grpc.common.ServiceName;
+import io.vertx.grpc.common.MessageSizeOverflowException;
+import io.vertx.grpc.common.GrpcStatus;
 import io.vertx.grpc.common.impl.GrpcMethodCall;
 import io.vertx.grpc.server.GrpcServer;
+import io.vertx.grpc.server.GrpcServerOptions;
 import io.vertx.grpc.server.GrpcServerRequest;
 
 import java.util.HashMap;
@@ -30,11 +34,13 @@ import java.util.Map;
 public class GrpcServerImpl implements GrpcServer {
 
   private final Vertx vertx;
+  private final long maxMessageSize;
   private Handler<GrpcServerRequest<Buffer, Buffer>> requestHandler;
   private Map<String, MethodCallHandler<?, ?>> methodCallHandlers = new HashMap<>();
 
-  public GrpcServerImpl(Vertx vertx) {
+  public GrpcServerImpl(Vertx vertx, GrpcServerOptions options) {
     this.vertx = vertx;
+    this.maxMessageSize = options.getMaxMessageSize();
   }
 
   @Override
@@ -47,8 +53,7 @@ public class GrpcServerImpl implements GrpcServer {
     } else {
       Handler<GrpcServerRequest<Buffer, Buffer>> handler = requestHandler;
       if (handler != null) {
-        GrpcServerRequestImpl<Buffer, Buffer> grpcRequest = new GrpcServerRequestImpl<>(httpRequest, GrpcMessageDecoder.IDENTITY, GrpcMessageEncoder.IDENTITY, methodCall);
-        grpcRequest.init();
+        GrpcServerRequest<Buffer, Buffer> grpcRequest = createRequest(httpRequest, GrpcMessageDecoder.IDENTITY, GrpcMessageEncoder.IDENTITY, methodCall);
         handler.handle(grpcRequest);
       } else {
         httpRequest.response().setStatusCode(500).end();
@@ -57,9 +62,21 @@ public class GrpcServerImpl implements GrpcServer {
   }
 
   private <Req, Resp> void handle(MethodCallHandler<Req, Resp> method, HttpServerRequest httpRequest, GrpcMethodCall methodCall) {
-    GrpcServerRequestImpl<Req, Resp> grpcRequest = new GrpcServerRequestImpl<>(httpRequest, method.messageDecoder, method.messageEncoder, methodCall);
-    grpcRequest.init();
+    GrpcServerRequest<Req, Resp> grpcRequest = createRequest(httpRequest, method.messageDecoder, method.messageEncoder, methodCall);
     method.handle(grpcRequest);
+  }
+
+  private <Req, Resp>GrpcServerRequest<Req, Resp> createRequest(HttpServerRequest httpRequest, GrpcMessageDecoder<Req> decoder, GrpcMessageEncoder<Resp> encoder, GrpcMethodCall methodCall) {
+    GrpcServerRequestImpl<Req, Resp> grpcRequest = new GrpcServerRequestImpl<>(httpRequest, maxMessageSize, decoder, encoder, methodCall);
+    grpcRequest.init();
+    grpcRequest.invalidMessageHandler(invalidMsg -> {
+      if (invalidMsg instanceof MessageSizeOverflowException) {
+        grpcRequest.response().status(GrpcStatus.RESOURCE_EXHAUSTED).end();
+      } else {
+        grpcRequest.response.cancel();
+      }
+    });
+    return grpcRequest;
   }
 
   public GrpcServer callHandler(Handler<GrpcServerRequest<Buffer, Buffer>> handler) {
